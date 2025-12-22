@@ -182,9 +182,12 @@ with st.sidebar.expander("Основные параметры", expanded=True): 
 
     # Получаем ТИКЕРЫ из выбранных форматированных строк
     tickers = [s.split(' - ')[0] for s in selected_names_formatted]
+    # Если ничего не выбрано, используем по умолчанию
+    if not tickers:
+        tickers = ['SPY', 'GLD', 'IEF', 'BTC-USD']
 
     # Создаем карту тикер -> название для выбранных (из COMMON_TICKERS по тикерам)
-    selected_ticker_map = {ticker: COMMON_TICKERS[ticker] for ticker in tickers if ticker in COMMON_TICKERS}
+    selected_ticker_map = {ticker: COMMON_TICKERS.get(ticker, ticker) for ticker in tickers}
 
     # Создаем словарь цветов для выбранных тикеров
     selected_ticker_colors = {

@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-# yfinance больше не нужен напрямую здесь
+# Прямая загрузка данных через yfinance
 import streamlit as st
 from datetime import date
 from typing import List, Dict, Optional, Tuple, Literal
