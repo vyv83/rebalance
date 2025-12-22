@@ -71,7 +71,82 @@ def load_price_data(
         traceback.print_exc()
         return None
 
-# --- Функции бэктестинга ---
+    except Exception as e:
+        print(f"Error loading data from yfinance: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+# --- Новые функции для Динамических Весов ---
+
+def calculate_rolling_volatility(
+    price_data: pd.DataFrame, 
+    window_days: int = 90,
+    min_periods: int = 20
+) -> pd.DataFrame:
+    """
+    Рассчитывает скользящую волатильность (StdDev дневных доходностей).
+    ВАЖНО: Добавлен .shift(1) для исключения заглядывания в будущее (Look-ahead bias).
+    Волатильность на "сегодня" рассчитывается по данным "вчера" и ранее.
+    """
+    # Расчет дневных доходностей
+    daily_returns = price_data.pct_change()
+    
+    # Расчет Rolling StdDev с временным окном
+    # window=f'{window_days}D' требует DatetimeIndex
+    rolling_std = daily_returns.rolling(window=f'{window_days}D', min_periods=min_periods).std()
+    
+    # SHIFT(1) - Ключевой момент защиты от Look-ahead
+    lagged_volatility = rolling_std.shift(1)
+    
+    return lagged_volatility
+
+def calculate_dynamic_weights(
+    volatility_df: pd.DataFrame,
+    base_risky_weights: Dict[str, float], # {ticker: base_weight} только рисковые
+    fixed_cash_weight: float
+) -> pd.DataFrame:
+    """
+    Рассчитывает динамические веса по стратегии Weighted Risk Parity.
+    Кэш фиксирован. Остаток (1 - Cash) распределяется.
+    Формула: Score = BaseWeight / Volatility.
+    """
+    # Создаем DataFrame для весов с тем же индексом
+    weights_df = pd.DataFrame(index=volatility_df.index, columns=list(base_risky_weights.keys()))
+    
+    # Работаем векторизованно построчно не очень удобно с dict, 
+    # проще пройтись по колонкам (активам)
+    
+    scores_df = pd.DataFrame(index=volatility_df.index)
+    
+    for ticker, base_w in base_risky_weights.items():
+        if ticker in volatility_df.columns:
+            # Score = Base / Volatility
+            # Защита от деления на 0: если волатильность 0 или NaN -> Score NaN
+            vol_series = volatility_df[ticker]
+            # Заменяем 0 на NaN, чтобы не делить на 0
+            safe_vol = vol_series.replace(0, np.nan) 
+            scores_df[ticker] = base_w / safe_vol
+        else:
+            scores_df[ticker] = np.nan
+            
+    # Сумма очков по строке
+    total_score = scores_df.sum(axis=1)
+    
+    # Доля, доступная для рисковых активов
+    risky_allocation_total = 1.0 - fixed_cash_weight
+    
+    # Нормализация
+    # Если total_score > 0, делим; иначе NaN
+    for ticker in scores_df.columns:
+        weights_df[ticker] = (scores_df[ticker] / total_score) * risky_allocation_total
+        
+    # Добавляем колонку Cash (фиксированная)
+    weights_df['Cash'] = fixed_cash_weight
+    
+    return weights_df
+
+# --- Базовые Функции бэктестинга ---
 
 # Функция для расчета просадки
 def calculate_drawdown_series(series: pd.Series) -> pd.Series:
@@ -123,8 +198,10 @@ def run_backtest(
     rebalance_freq: str,
     initial_capital: float,
     weight_deviation_threshold: float,
-    deviation_type: Literal['absolute', 'relative']
-) -> Optional[Tuple[pd.DataFrame, pd.DataFrame, Dict[str, List[Tuple[Timestamp, str]]], pd.DataFrame]]:
+    deviation_type: Literal['absolute', 'relative'],
+    use_dynamic_weights: bool = False,
+    dynamic_window_days: int = 90
+) -> Optional[Tuple[pd.DataFrame, pd.DataFrame, Dict[str, List[Tuple[Timestamp, str]]], pd.DataFrame, Dict[str, pd.DataFrame]]]:
     """
     Выполняет бэктестинг стратегий ребалансировки и сравнение с Buy & Hold.
 
@@ -137,12 +214,13 @@ def run_backtest(
         deviation_type (Literal['absolute', 'relative']): Тип порога отклонения.
 
     Returns:
-        Optional[Tuple[pd.DataFrame, pd.DataFrame, Dict[str, List[Tuple[Timestamp, str]]], pd.DataFrame]]:
-            Кортеж из четырех элементов:
+        Optional[Tuple[pd.DataFrame, pd.DataFrame, Dict[str, List[Tuple[Timestamp, str]]], pd.DataFrame, Dict[str, pd.DataFrame]]]:
+            Кортеж из пяти элементов:
             1. results: DataFrame со стоимостями портфелей для разных стратегий.
             2. drawdown_results: DataFrame с рядами просадок для основных стратегий.
             3. rebalance_log: Словарь с логами ребалансировок {strategy_name: [(date, type)]}.
             4. hover_weights_text: DataFrame с текстом весов для hover.
+            5. auxiliary_data: Словарь с доп. данными (volatility_df, dynamic_weights_df).
             Или None в случае ошибки.
     """
     if price_data is None or price_data.empty or not target_weights:
@@ -165,6 +243,44 @@ def run_backtest(
 
     # Рассчитываем начальные доли и кэш ОДИН РАЗ
     initial_total_value = initial_capital
+    
+    # --- Расчет Динамических весов (если включено) ---
+    dynamic_target_weights_df = None
+    volatility_df = None
+    
+    if use_dynamic_weights:
+        print(f"Calculating dynamic weights with window {dynamic_window_days} days...")
+        # Расчет волатильности
+        volatility_df = calculate_rolling_volatility(
+            price_data[assets_to_rebalance], 
+            window_days=dynamic_window_days
+        )
+        
+        # Расчет динамических весов
+        # Передаем только рисковые активы в расчет
+        base_risky_weights = {k: v for k, v in target_weights.items() if k != 'Cash'}
+        cash_weight_fixed = target_weights.get('Cash', 0.0)
+        
+        dynamic_target_weights_df = calculate_dynamic_weights(
+            volatility_df,
+            base_risky_weights,
+            cash_weight_fixed
+        )
+        # Выравниваем индекс динамических весов по индексу цен (ffill для заполнения пропусков если есть)
+        dynamic_target_weights_df = dynamic_target_weights_df.reindex(price_data.index).ffill()
+        
+        # Если в начале данных недостаточно для расчета волатильности (NaN), 
+        # используем базовые веса fallback 
+        # (Обычно первые N дней волатильность NaN)
+        for date_idx in dynamic_target_weights_df.index:
+             if pd.isna(dynamic_target_weights_df.loc[date_idx]).any():
+                 # Заполняем базовыми весами
+                 for ticker, w in base_risky_weights.items():
+                     dynamic_target_weights_df.at[date_idx, ticker] = w
+                 dynamic_target_weights_df.at[date_idx, 'Cash'] = cash_weight_fixed
+
+    # ----------------------------------------------------
+
     initial_holdings_template = {} # Шаблон долей
     for ticker in assets_to_rebalance:
         target_value = initial_total_value * target_weights.get(ticker, 0.0)
@@ -214,6 +330,10 @@ def run_backtest(
     portfolio_cal['Holdings'] = pd.Series(dtype=object)
     portfolio_cal['Cash'] = np.nan
     portfolio_cal['Total_Value'] = np.nan
+    
+    # --- Container for Actual Component Weights (Calendar Strategy) ---
+    actual_weights_dict_list_cal = [] 
+    # ----------------------------------------------------------------
 
     portfolio_cal.at[first_date, 'Holdings'] = initial_holdings_template.copy()
     portfolio_cal.at[first_date, 'Cash'] = initial_cash
@@ -247,13 +367,24 @@ def run_backtest(
             cash_after_rebalance = 0.0
             if current_total_value > 0:
                 for ticker in assets_to_rebalance:
-                    target_val = current_total_value * target_weights.get(ticker, 0.0)
+                    # ОПРЕДЕЛЯЕМ ЦЕЛЕВОЙ ВЕС (ДИНАМИЧЕСКИЙ ИЛИ СТАТИЧЕСКИЙ)
+                    tgt_w = target_weights.get(ticker, 0.0)
+                    if use_dynamic_weights and dynamic_target_weights_df is not None:
+                         tgt_w = dynamic_target_weights_df.at[current_date, ticker]
+                    
+                    target_val = current_total_value * tgt_w
                     price = price_data.at[current_date, ticker]
                     shares = 0.0
                     if not pd.isna(price) and price > 0 and target_val > 0:
                         shares = target_val / price
                     new_holdings[ticker] = shares
-                cash_after_rebalance = current_total_value * target_weights.get('Cash', 0.0)
+                
+                # CASH WEIGHT
+                cash_tgt = target_weights.get('Cash', 0.0)
+                if use_dynamic_weights and dynamic_target_weights_df is not None:
+                     cash_tgt = dynamic_target_weights_df.at[current_date, 'Cash']
+                
+                cash_after_rebalance = current_total_value * cash_tgt
             portfolio_cal.at[current_date, 'Holdings'] = new_holdings
             portfolio_cal.at[current_date, 'Cash'] = cash_after_rebalance
             # --- Логирование ---
@@ -263,6 +394,33 @@ def run_backtest(
         # --- Логирование hover текста ПОСЛЕ всех действий за день ---
         final_holdings = portfolio_cal.at[current_date, 'Holdings']
         final_cash = portfolio_cal.at[current_date, 'Cash']
+        
+        # --- Расчет фактических весов на конец дня (Calendar) ---
+        daily_weights = {}
+        current_day_total_val = final_cash
+        current_day_asset_vals = {}
+        
+        for ticker in all_price_assets:
+            sh = final_holdings.get(ticker, 0.0)
+            pr = price_data.at[current_date, ticker]
+            val = 0.0
+            if sh > 0 and not pd.isna(pr):
+                val = sh * pr
+            current_day_asset_vals[ticker] = val
+            current_day_total_val += val
+        
+        if current_day_total_val > 0:
+            for ticker in assets_to_rebalance: 
+                daily_weights[ticker] = current_day_asset_vals.get(ticker, 0.0) / current_day_total_val
+            daily_weights['Cash'] = final_cash / current_day_total_val
+        else:
+             for ticker in assets_to_rebalance: daily_weights[ticker] = 0.0
+             daily_weights['Cash'] = 1.0
+        
+        daily_weights['Date'] = current_date
+        actual_weights_dict_list_cal.append(daily_weights)
+        # ---------------------------------------------
+
         hover_text = format_hover_weights(final_holdings, final_cash, price_data.loc[current_date],
                                           assets_to_rebalance, all_price_assets)
         calendar_hover_texts.append(hover_text)
@@ -276,6 +434,10 @@ def run_backtest(
     portfolio_wb['Holdings'] = pd.Series(dtype=object)
     portfolio_wb['Cash'] = np.nan
     portfolio_wb['Total_Value'] = np.nan
+    
+    # --- Container for Actual Component Weights (Weight Band Strategy) ---
+    actual_weights_dict_list_wb = [] 
+    # ----------------------------------------------------------------
     # Удаляем Prices_Last_Rebalance
 
     # Инициализация
@@ -310,7 +472,12 @@ def run_backtest(
             for ticker in assets_to_rebalance:
                 current_asset_val_ticker = asset_values_today.get(ticker, 0.0)
                 current_weight = current_asset_val_ticker / current_total_value
+                
+                # ОПРЕДЕЛЯЕМ ЦЕЛЕВОЙ ВЕС (ДИНАМИЧЕСКИЙ ИЛИ СТАТИЧЕСКИЙ)
                 target_weight = target_weights.get(ticker, 0.0)
+                if use_dynamic_weights and dynamic_target_weights_df is not None:
+                        target_weight = dynamic_target_weights_df.at[current_date, ticker]
+
 
                 # --- ИЗМЕНЕННАЯ ЛОГИКА ПРОВЕРКИ ОТКЛОНЕНИЯ ---
                 deviation_exceeded = False
@@ -335,13 +502,24 @@ def run_backtest(
             cash_after_rebalance = 0.0
             if current_total_value > 0:
                 for ticker in assets_to_rebalance:
-                    target_val = current_total_value * target_weights.get(ticker, 0.0)
+                    # ОПРЕДЕЛЯЕМ ЦЕЛЕВОЙ ВЕС (ДИНАМИЧЕСКИЙ ИЛИ СТАТИЧЕСКИЙ)
+                    tgt_w = target_weights.get(ticker, 0.0)
+                    if use_dynamic_weights and dynamic_target_weights_df is not None:
+                         tgt_w = dynamic_target_weights_df.at[current_date, ticker]
+                    
+                    target_val = current_total_value * tgt_w
                     price = price_data.at[current_date, ticker]
                     shares = 0.0
                     if not pd.isna(price) and price > 0 and target_val > 0:
                         shares = target_val / price
                     new_holdings[ticker] = shares
-                cash_after_rebalance = current_total_value * target_weights.get('Cash', 0.0)
+                
+                # CASH WEIGHT
+                cash_tgt = target_weights.get('Cash', 0.0)
+                if use_dynamic_weights and dynamic_target_weights_df is not None:
+                     cash_tgt = dynamic_target_weights_df.at[current_date, 'Cash']
+                
+                cash_after_rebalance = current_total_value * cash_tgt
             portfolio_wb.at[current_date, 'Holdings'] = new_holdings
             portfolio_wb.at[current_date, 'Cash'] = cash_after_rebalance
             # --- Логирование ---
@@ -351,6 +529,33 @@ def run_backtest(
         # --- Логирование hover текста ПОСЛЕ всех действий за день ---
         final_holdings = portfolio_wb.at[current_date, 'Holdings']
         final_cash = portfolio_wb.at[current_date, 'Cash']
+        
+        # --- Расчет фактических весов на конец дня (Weight Band) ---
+        daily_weights = {}
+        current_day_total_val = final_cash
+        current_day_asset_vals = {}
+        
+        for ticker in all_price_assets:
+            sh = final_holdings.get(ticker, 0.0)
+            pr = price_data.at[current_date, ticker]
+            val = 0.0
+            if sh > 0 and not pd.isna(pr):
+                val = sh * pr
+            current_day_asset_vals[ticker] = val
+            current_day_total_val += val
+        
+        if current_day_total_val > 0:
+            for ticker in assets_to_rebalance: 
+                daily_weights[ticker] = current_day_asset_vals.get(ticker, 0.0) / current_day_total_val
+            daily_weights['Cash'] = final_cash / current_day_total_val
+        else:
+             for ticker in assets_to_rebalance: daily_weights[ticker] = 0.0
+             daily_weights['Cash'] = 1.0
+        
+        daily_weights['Date'] = current_date
+        actual_weights_dict_list_wb.append(daily_weights)
+        # ---------------------------------------------
+        
         hover_text = format_hover_weights(final_holdings, final_cash, price_data.loc[current_date],
                                           assets_to_rebalance, all_price_assets)
         weight_band_hover_texts.append(hover_text)
@@ -363,6 +568,13 @@ def run_backtest(
     portfolio_comb['Holdings'] = pd.Series(dtype=object)
     portfolio_comb['Cash'] = np.nan
     portfolio_comb['Total_Value'] = np.nan
+    
+    # --- Container for Actual Component Weights (Combined Strategy) ---
+    # DataFrame to store weight of each asset at the end of each day
+    # Index: Date, Columns: Assets + Cash
+    actual_weights_dict_list = [] # List of dicts to create DataFrame later
+    # ----------------------------------------------------------------
+    
     # Удаляем Prices_Last_Price_Trigger_Rebalance
 
     # Инициализация
@@ -398,7 +610,11 @@ def run_backtest(
             for ticker in assets_to_rebalance:
                 current_asset_val_ticker = asset_values_today_comb.get(ticker, 0.0)
                 current_weight = current_asset_val_ticker / current_total_value
+                
+                # ОПРЕДЕЛЯЕМ ЦЕЛЕВОЙ ВЕС (ДИНАМИЧЕСКИЙ ИЛИ СТАТИЧЕСКИЙ)
                 target_weight = target_weights.get(ticker, 0.0)
+                if use_dynamic_weights and dynamic_target_weights_df is not None:
+                        target_weight = dynamic_target_weights_df.at[current_date, ticker]
 
                 # --- ИЗМЕНЕННАЯ ЛОГИКА ПРОВЕРКИ ОТКЛОНЕНИЯ (такая же, как в п.2) ---
                 deviation_exceeded = False
@@ -423,13 +639,24 @@ def run_backtest(
             cash_after_rebalance = 0.0
             if current_total_value > 0:
                 for ticker in assets_to_rebalance:
-                    target_val = current_total_value * target_weights.get(ticker, 0.0)
+                    # ОПРЕДЕЛЯЕМ ЦЕЛЕВОЙ ВЕС (ДИНАМИЧЕСКИЙ ИЛИ СТАТИЧЕСКИЙ)
+                    tgt_w = target_weights.get(ticker, 0.0)
+                    if use_dynamic_weights and dynamic_target_weights_df is not None:
+                         tgt_w = dynamic_target_weights_df.at[current_date, ticker]
+                    
+                    target_val = current_total_value * tgt_w
                     price = price_data.at[current_date, ticker]
                     shares = 0.0
                     if not pd.isna(price) and price > 0 and target_val > 0:
                         shares = target_val / price
                     new_holdings[ticker] = shares
-                cash_after_rebalance = current_total_value * target_weights.get('Cash', 0.0)
+                
+                # CASH WEIGHT
+                cash_tgt = target_weights.get('Cash', 0.0)
+                if use_dynamic_weights and dynamic_target_weights_df is not None:
+                     cash_tgt = dynamic_target_weights_df.at[current_date, 'Cash']
+                
+                cash_after_rebalance = current_total_value * cash_tgt
             portfolio_comb.at[current_date, 'Holdings'] = new_holdings
             portfolio_comb.at[current_date, 'Cash'] = cash_after_rebalance
             # Удалено обновление цен триггера
@@ -445,6 +672,36 @@ def run_backtest(
         # --- Логирование hover текста ПОСЛЕ всех действий за день ---
         final_holdings = portfolio_comb.at[current_date, 'Holdings']
         final_cash = portfolio_comb.at[current_date, 'Cash']
+        
+        # --- Расчет фактических весов на конец дня ---
+        daily_weights = {}
+        current_day_total_val = final_cash
+        current_day_asset_vals = {}
+        
+        # Считаем стоимость активов по ценам закрытия
+        for ticker in all_price_assets:
+            sh = final_holdings.get(ticker, 0.0)
+            pr = price_data.at[current_date, ticker]
+            val = 0.0
+            if sh > 0 and not pd.isna(pr):
+                val = sh * pr
+            current_day_asset_vals[ticker] = val
+            current_day_total_val += val
+        
+        # Считаем доли
+        if current_day_total_val > 0:
+            for ticker in assets_to_rebalance: # Используем assets_to_rebalance для чистоты графика
+                daily_weights[ticker] = current_day_asset_vals.get(ticker, 0.0) / current_day_total_val
+            daily_weights['Cash'] = final_cash / current_day_total_val
+        else:
+             # Если портфель 0, веса 0
+             for ticker in assets_to_rebalance: daily_weights[ticker] = 0.0
+             daily_weights['Cash'] = 1.0
+        
+        daily_weights['Date'] = current_date
+        actual_weights_dict_list.append(daily_weights)
+        # ---------------------------------------------
+
         hover_text = format_hover_weights(final_holdings, final_cash, price_data.loc[current_date],
                                           assets_to_rebalance, all_price_assets)
         combined_hover_texts.append(hover_text)
@@ -520,8 +777,41 @@ def run_backtest(
     }, index=hover_dates) # Используем собранные даты как индекс
     # ---------------------------------------------
 
-    # Возвращаем ЧЕТЫРЕ элемента
-    return results, drawdown_results, rebalance_log, hover_weights_text
+    # Сбор вспомогательных данных
+    auxiliary_data = {}
+    auxiliary_data['volatility_df'] = volatility_df
+
+    # Создаем DataFrame фактических весов (Combined)
+    actual_weights_df_comb = pd.DataFrame(actual_weights_dict_list)
+    if not actual_weights_df_comb.empty:
+        actual_weights_df_comb.set_index('Date', inplace=True)
+    auxiliary_data['actual_weights_combined'] = actual_weights_df_comb
+
+    # Создаем DataFrame фактических весов (Calendar)
+    actual_weights_df_cal = pd.DataFrame(actual_weights_dict_list_cal)
+    if not actual_weights_df_cal.empty:
+        actual_weights_df_cal.set_index('Date', inplace=True)
+    auxiliary_data['actual_weights_calendar'] = actual_weights_df_cal
+    
+    # Создаем DataFrame фактических весов (Weight Band)
+    actual_weights_df_wb = pd.DataFrame(actual_weights_dict_list_wb)
+    if not actual_weights_df_wb.empty:
+        actual_weights_df_wb.set_index('Date', inplace=True)
+    auxiliary_data['actual_weights_band'] = actual_weights_df_wb
+
+
+    if use_dynamic_weights:
+        auxiliary_data['dynamic_weights_df'] = dynamic_target_weights_df
+    else:
+        # Если веса статичные, создаем DataFrame с константными весами для визуализации
+        # Используем индекс цен для дат
+        static_weights_df = pd.DataFrame(index=price_data.index)
+        for ticker, w in target_weights.items():
+            static_weights_df[ticker] = w
+        auxiliary_data['dynamic_weights_df'] = static_weights_df
+
+    # Возвращаем ПЯТЬ элементов
+    return results, drawdown_results, rebalance_log, hover_weights_text, auxiliary_data
 
 # --- Функции расчета метрик ---
 

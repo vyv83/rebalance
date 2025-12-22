@@ -256,4 +256,104 @@ def plot_correlation_heatmap(price_data: pd.DataFrame, ticker_map: Dict[str, str
     )
     fig.update_xaxes(side="bottom") # Перемещаем X ось вниз
 
-    return fig 
+    return fig
+
+def plot_rolling_volatility(volatility_df: pd.DataFrame, ticker_map: Dict[str, str]) -> Optional[go.Figure]:
+    """График скользящей волатильности (Inverse Volatility Input)."""
+    if volatility_df is None or volatility_df.empty:
+        return None
+        
+    fig = go.Figure()
+    
+    # Приводим к годовой волатильности для отображения?
+    # Обычно волатильность показывают в % годовых
+    annualized_vol = volatility_df * np.sqrt(252) * 100
+    
+    for ticker in annualized_vol.columns:
+        display_name = ticker_map.get(ticker, ticker)
+        fig.add_trace(go.Scatter(
+            x=annualized_vol.index,
+            y=annualized_vol[ticker],
+            mode='lines',
+            name=display_name,
+            hovertemplate='%{y:.2f}%<extra></extra>'
+        ))
+        
+    fig.update_layout(
+        xaxis_title='Дата',
+        yaxis_title='Волатильность (% годовых)',
+        legend_title='Активы',
+        hovermode='x unified'
+    )
+    return fig
+
+def plot_weighted_risk_contribution(
+    volatility_df: pd.DataFrame, 
+    weights_df: pd.DataFrame,
+    ticker_map: Dict[str, str]
+) -> Optional[go.Figure]:
+    """График взвешенного риска (Weight * Volatility)."""
+    if volatility_df is None or weights_df is None:
+        return None
+        
+    # Выравниваем индексы
+    common_idx = volatility_df.index.intersection(weights_df.index)
+    vol_aligned = volatility_df.loc[common_idx]
+    w_aligned = weights_df.loc[common_idx]
+    
+    # Умножаем вес на волатильность (вклад в риск)
+    # Volatility в долях, weights в долях.
+    # Результат * 100 для %
+    risk_contribution = vol_aligned * w_aligned * np.sqrt(252) * 100
+    
+    fig = go.Figure()
+    
+    for ticker in risk_contribution.columns:
+        if ticker == 'Cash': continue # Пропускаем Cash
+        display_name = ticker_map.get(ticker, ticker)
+        fig.add_trace(go.Scatter(
+            x=risk_contribution.index,
+            y=risk_contribution[ticker],
+            mode='lines',
+            name=display_name,
+             hovertemplate='%{y:.2f}%<extra></extra>'
+        ))
+        
+    fig.update_layout(
+        xaxis_title='Дата',
+        yaxis_title='Вклад в риск (% Vol * Weight)',
+        legend_title='Активы',
+        hovermode='x unified',
+        title="Равномерность распределения риска (Ideal: линии должны сходиться)"
+    )
+    return fig
+
+def plot_effective_weights(weights_df: pd.DataFrame, ticker_map: Dict[str, str]) -> Optional[go.Figure]:
+    """График динамики целевых весов (Stacked Area)."""
+    if weights_df is None or weights_df.empty:
+        return None
+    
+    fig = go.Figure()
+    
+    # Сортируем колонки, чтобы Cash был последним или первым для красоты?
+    # Обычно кэш вниз или вверх. Оставим как есть.
+    
+    for col in weights_df.columns:
+        display_name = ticker_map.get(col, col)
+        fig.add_trace(go.Scatter(
+            x=weights_df.index,
+            y=weights_df[col] * 100, # В процентах
+            mode='lines',
+            name=display_name,
+            stackgroup='one', # Включаем стекинг
+            groupnorm='percent', # Нормализация до 100% (для гарантии)
+            hovertemplate='%{y:.1f}%<extra></extra>'
+        ))
+    
+    fig.update_layout(
+        xaxis_title='Дата',
+        yaxis_title='Целевой Вес (%)',
+        legend_title='Активы',
+        hovermode='x unified'
+    )
+    return fig

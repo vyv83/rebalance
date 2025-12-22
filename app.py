@@ -303,6 +303,22 @@ with st.sidebar.expander("Основные параметры", expanded=True): 
         else:
             st.text("Выберите активы для задания весов.") # Сообщение, если тикеры не выбраны
 
+    # Секция Динамических Весов
+    with st.sidebar.expander("Динамические Веса (Beta)", expanded=False):
+        use_dynamic_weights = st.checkbox("Включить Inverse Volatility", value=False, help="Веса пересчитываются обратно пропорционально волатильности.")
+        
+        dynamic_window = 90
+        if use_dynamic_weights:
+            dynamic_window = st.slider(
+                "Окно расчета (дней)",
+                min_value=30,
+                max_value=365,
+                value=90,
+                step=30,
+                help="Период для расчета исторической волатильности."
+            )
+            st.info(f"Веса будут обновляться ежедневно на основе волатильности за последние {dynamic_window} дн.")
+
 # Кнопка запуска (остается вне expander)
 run_button = st.sidebar.button("Запустить Бэктест")
 
@@ -362,14 +378,16 @@ if run_button:
                 target_weights=normalized_weights,
                 rebalance_freq=rebalance_freq_display,
                 initial_capital=initial_capital,
-                weight_deviation_threshold=price_change_threshold, # Передаем новый параметр
-                deviation_type=deviation_type # Передаем новый параметр
+                weight_deviation_threshold=price_change_threshold,
+                deviation_type=deviation_type,
+                use_dynamic_weights=use_dynamic_weights, # Передаем параметр
+                dynamic_window_days=dynamic_window       # Передаем параметр
             )
             if backtest_output is None:
                 st.error("Ошибка при выполнении бэктеста.")
                 st.stop()
-            # Распаковываем ЧЕТЫРЕ результата
-            backtest_results, drawdown_results, rebalance_log, hover_weights_text = backtest_output
+            # Распаковываем ПЯТЬ результатов
+            backtest_results, drawdown_results, rebalance_log, hover_weights_text, auxiliary_data = backtest_output
 
         # 2.5 Расчет метрик
         if backtest_results is None or drawdown_results is None:
@@ -507,6 +525,82 @@ if run_button:
                 st.warning("Не удалось построить матрицу корреляций.")
         else:
             st.warning("Для расчета корреляции необходимо выбрать минимум 2 актива.")
+
+    # Секция 6: Фактическое Распределение (Дрейф) - Всегда отображается
+    with st.expander("6. Фактическое Распределение (Дрейф)", expanded=True):
+        st.caption("Данные графики показывают реальное изменение долей активов внутри дня. Вы можете увидеть, как меняются доли из-за движения цен и как они возвращаются к целевым значениям при ребалансировке.")
+        
+        # Получаем данные
+        aw_comb = auxiliary_data.get('actual_weights_combined')
+        aw_cal = auxiliary_data.get('actual_weights_calendar')
+        aw_band = auxiliary_data.get('actual_weights_band')
+        
+        tab_comb, tab_cal, tab_band = st.tabs(["Комбинированная (Combined)", "Календарная (Calendar)", "По Отклонению (Threshold)"])
+        
+        with tab_comb:
+             if aw_comb is not None and not aw_comb.empty:
+                fig_comb = plots.plot_effective_weights(aw_comb, selected_ticker_map)
+                if fig_comb:
+                     st.plotly_chart(fig_comb, width='stretch', key="aw_comb")
+                else:
+                     st.warning("Нет данных.")
+             else:
+                 st.warning("Не удалось рассчитать фактические веса для комбинированной стратегии.")
+
+        with tab_cal:
+             if aw_cal is not None and not aw_cal.empty:
+                fig_cal = plots.plot_effective_weights(aw_cal, selected_ticker_map)
+                if fig_cal:
+                     st.plotly_chart(fig_cal, width='stretch', key="aw_cal")
+                else:
+                     st.warning("Нет данных.")
+             else:
+                 st.warning("Не удалось рассчитать фактические веса для календарной стратегии.")
+
+        with tab_band:
+             if aw_band is not None and not aw_band.empty:
+                fig_band = plots.plot_effective_weights(aw_band, selected_ticker_map)
+                if fig_band:
+                     st.plotly_chart(fig_band, width='stretch', key="aw_band")
+                else:
+                     st.warning("Нет данных.")
+             else:
+                 st.warning("Не удалось рассчитать фактические веса для стратегии по отклонению.")
+
+    # Секция 7: Анализ Inverse Volatility (Только если включено)
+    if use_dynamic_weights:
+        with st.expander("7. Анализ Стратегии Inverse Volatility", expanded=True):
+            target_weights_df = auxiliary_data.get('dynamic_weights_df')
+            vol_df = auxiliary_data.get('volatility_df')
+            
+            tab_tgt, tab_vol, tab_risk = st.tabs(["Целевые Веса (Target)", "Историческая Волатильность", "Вклад в Риск"])
+            
+            with tab_tgt:
+                st.caption("Расчетные целевые веса, которые стратегия предлагает на каждый день (до применения ограничений ребалансировки).")
+                if target_weights_df is not None and not target_weights_df.empty:
+                    tgt_fig = plots.plot_effective_weights(target_weights_df, selected_ticker_map)
+                    if tgt_fig:
+                        st.plotly_chart(tgt_fig, width='stretch', key="iv_tgt")
+                    else:
+                        st.warning("Нет данных.")
+            
+            with tab_vol:
+                st.caption(f"Скользящая волатильность за окно {dynamic_window} дней.")
+                if vol_df is not None and not vol_df.empty:
+                    vol_fig = plots.plot_rolling_volatility(vol_df, selected_ticker_map)
+                    if vol_fig:
+                        st.plotly_chart(vol_fig, width='stretch', key="iv_vol")
+                    else:
+                        st.warning("Нет данных.")
+
+            with tab_risk:
+                st.caption("Оценка вклада каждого актива в общий риск (Вес * Волатильность).")
+                if vol_df is not None and not vol_df.empty and target_weights_df is not None:
+                    risk_fig = plots.plot_weighted_risk_contribution(vol_df, target_weights_df, selected_ticker_map)
+                    if risk_fig:
+                        st.plotly_chart(risk_fig, width='stretch', key="iv_risk")
+                    else:
+                        st.warning("Нет данных.")
 
 else:
     st.info("Настройте параметры в боковой панели и нажмите 'Запустить Бэктест'!") 
