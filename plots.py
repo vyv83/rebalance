@@ -328,7 +328,7 @@ def plot_weighted_risk_contribution(
     )
     return fig
 
-def plot_effective_weights(weights_df: pd.DataFrame, ticker_map: Dict[str, str]) -> Optional[go.Figure]:
+def plot_effective_weights(weights_df: pd.DataFrame, ticker_map: Dict[str, str], rebalance_dates: Optional[List[pd.Timestamp]] = None) -> Optional[go.Figure]:
     """График динамики целевых весов (Stacked Area)."""
     if weights_df is None or weights_df.empty:
         return None
@@ -350,10 +350,32 @@ def plot_effective_weights(weights_df: pd.DataFrame, ticker_map: Dict[str, str])
             hovertemplate='%{y:.1f}%<extra></extra>'
         ))
     
+    # Add vertical lines for rebalancing events
+    if rebalance_dates is not None and len(rebalance_dates) > 0:
+        shapes = []
+        for d in rebalance_dates:
+            shapes.append(dict(
+                type="line",
+                x0=d,
+                y0=0,
+                x1=d,
+                y1=100,
+                xref="x",
+                yref="y",
+                layer="above",
+                line=dict(
+                    color="grey",
+                    width=1,
+                    dash="solid"
+                )
+            ))
+        fig.update_layout(shapes=shapes)
+    
     fig.update_layout(
         xaxis_title='Дата',
         yaxis_title='Целевой Вес (%)',
         legend_title='Активы',
-        hovermode='x unified'
+        hovermode='x unified',
+        yaxis=dict(range=[0, 100])
     )
     return fig

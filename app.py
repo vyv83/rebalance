@@ -535,11 +535,18 @@ if run_button:
         aw_cal = auxiliary_data.get('actual_weights_calendar')
         aw_band = auxiliary_data.get('actual_weights_band')
         
+        # Extract rebalance dates from logs
+        # rebalance_log имеет структуру: {'calendar': [...], 'weight_band': [...], 'combined': [...]}
+        # Каждый элемент списка - кортеж (date, type)
+        dates_comb = [x[0] for x in rebalance_log.get('combined', [])]
+        dates_cal = [x[0] for x in rebalance_log.get('calendar', [])]
+        dates_band = [x[0] for x in rebalance_log.get('weight_band', [])]
+        
         tab_comb, tab_cal, tab_band = st.tabs(["Комбинированная (Combined)", "Календарная (Calendar)", "По Отклонению (Threshold)"])
         
         with tab_comb:
              if aw_comb is not None and not aw_comb.empty:
-                fig_comb = plots.plot_effective_weights(aw_comb, selected_ticker_map)
+                fig_comb = plots.plot_effective_weights(aw_comb, selected_ticker_map, rebalance_dates=dates_comb)
                 if fig_comb:
                      st.plotly_chart(fig_comb, width='stretch', key="aw_comb")
                 else:
@@ -549,7 +556,7 @@ if run_button:
 
         with tab_cal:
              if aw_cal is not None and not aw_cal.empty:
-                fig_cal = plots.plot_effective_weights(aw_cal, selected_ticker_map)
+                fig_cal = plots.plot_effective_weights(aw_cal, selected_ticker_map, rebalance_dates=dates_cal)
                 if fig_cal:
                      st.plotly_chart(fig_cal, width='stretch', key="aw_cal")
                 else:
@@ -559,7 +566,7 @@ if run_button:
 
         with tab_band:
              if aw_band is not None and not aw_band.empty:
-                fig_band = plots.plot_effective_weights(aw_band, selected_ticker_map)
+                fig_band = plots.plot_effective_weights(aw_band, selected_ticker_map, rebalance_dates=dates_band)
                 if fig_band:
                      st.plotly_chart(fig_band, width='stretch', key="aw_band")
                 else:

@@ -341,8 +341,15 @@ def run_backtest(
 
     freq_map = {'M': 'ME', 'Q': 'QE', 'A': 'YE'}
     actual_freq = freq_map.get(rebalance_freq, rebalance_freq)
-    rebalance_dates_cal_raw = pd.date_range(start=first_date, end=portfolio_cal.index[-1], freq=actual_freq)
-    rebalance_dates_cal = portfolio_cal.index.intersection(rebalance_dates_cal_raw)
+    
+    # Use resample to get ACTUAL trading dates (last day of each period)
+    # This guarantees the dates exist in the index
+    temp_series = pd.Series(portfolio_cal.index, index=portfolio_cal.index)
+    rebalance_dates_series = temp_series.resample(actual_freq).last().dropna()
+    
+    # CRITICAL: Convert to SET of Timestamps for O(1) lookup
+    # Using set() instead of list ensures reliable 'in' operator behavior
+    rebalance_dates_cal = set(pd.Timestamp(d) for d in rebalance_dates_series.values)
 
     for i in range(1, len(portfolio_cal.index)):
         current_date = portfolio_cal.index[i]
@@ -360,6 +367,7 @@ def run_backtest(
                 current_total_value += shares * price
         current_total_value += portfolio_cal.at[current_date, 'Cash']
         portfolio_cal.at[current_date, 'Total_Value'] = current_total_value
+        
         # Ребалансировка?
         if current_date in rebalance_dates_cal:
             # (логика ребалансировки как раньше)
@@ -428,7 +436,7 @@ def run_backtest(
         # -----------------------------------------------------------
 
     calendar_rebalanced_values = portfolio_cal['Total_Value'].copy().rename('Calendar_Rebalanced_Value')
-
+    
     # --- 2. Логика ребалансировки ПО ПОРОГУ ОТКЛОНЕНИЯ ДОЛИ ---
     portfolio_wb = pd.DataFrame(index=price_data.index) # wb = weight band
     portfolio_wb['Holdings'] = pd.Series(dtype=object)
@@ -763,9 +771,9 @@ def run_backtest(
 
     # --- Формирование словаря логов --- 
     rebalance_log = {
-        'Calendar_Rebalanced_Value': calendar_rebalance_log,
-        'Weight_Band_Value': weight_band_rebalance_log,
-        'Combined_Value': combined_rebalance_log
+        'calendar': calendar_rebalance_log,
+        'weight_band': weight_band_rebalance_log,
+        'combined': combined_rebalance_log
     }
     # ------------------------------------
 
