@@ -347,7 +347,8 @@ def plot_effective_weights(weights_df: pd.DataFrame, ticker_map: Dict[str, str],
             name=display_name,
             stackgroup='one', # Включаем стекинг
             groupnorm='percent', # Нормализация до 100% (для гарантии)
-            hovertemplate='%{y:.1f}%<extra></extra>'
+            hovertemplate='%{y:.1f}%<extra></extra>',
+            line=dict(width=0) # Убираем линии между областями
         ))
     
     # Add vertical lines for rebalancing events
