@@ -43,13 +43,27 @@ def load_price_data(
             print("Error: No data received from yfinance.")
             return None
 
-        # Используем Close цены
+        # УПРАВЛЕНИЕ КОЛОНКАМИ (Приоритет Adj Close)
         if isinstance(data.columns, pd.MultiIndex):
-            # Если MultiIndex (для нескольких тикеров), берем только 'Close'
-            close_data = data['Close']
+            # Если загружено несколько тикеров (MultiIndex)
+            if 'Adj Close' in data.columns.levels[0]:
+                close_data = data['Adj Close'].copy()
+            else:
+                close_data = data['Close'].copy() if 'Close' in data.columns.levels[0] else data.iloc[:, :len(tickers)]
+            
+            # Гарантируем правильный порядок и имена колонок
+            close_data = close_data[tickers]
         else:
-            # Для одного тикера
-            close_data = data[['Close']] if 'Close' in data.columns else data
+            # Если один тикер (Series или плоский DataFrame)
+            if 'Adj Close' in data.columns:
+                close_data = data[['Adj Close']].copy()
+                close_data.columns = tickers # Переименовываем в тикер
+            elif 'Close' in data.columns:
+                close_data = data[['Close']].copy()
+                close_data.columns = tickers
+            else:
+                close_data = data.copy()
+                close_data.columns = tickers
 
         # Удаляем строки с NaN
         close_data = close_data.dropna()
