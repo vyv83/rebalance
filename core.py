@@ -1048,8 +1048,16 @@ def calculate_metrics(backtest_results: pd.DataFrame, risk_free_rate_annual: flo
 
             rebalance_count = np.nan # Инициализируем как NaN
             # --- Добавляем расчет количества ребалансировок ---
-            if internal_col_name and internal_col_name in rebalance_log: # Проверяем, есть ли лог для этой стратегии
-                rebalance_count = len(rebalance_log[internal_col_name])
+            # Mapping from internal columns to rebalance_log keys
+            log_key_map = {
+                'Calendar_Rebalanced_Value': 'calendar',
+                'Weight_Band_Value': 'weight_band',
+                'Combined_Value': 'combined'
+            }
+            log_key = log_key_map.get(internal_col_name) if internal_col_name else None
+            
+            if log_key and log_key in rebalance_log:
+                rebalance_count = len(rebalance_log[log_key])
             elif name.startswith('B&H'): # Для стратегий B&H ставим 0
                  rebalance_count = 0
             # ---------------------------------------------------

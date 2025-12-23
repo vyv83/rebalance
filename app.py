@@ -480,26 +480,22 @@ if run_button:
                 columns_to_drop = ['Start Value', 'Max Drawdown Abs $', 'Peak Before MDD']
                 metrics_df_display = metrics_df_display.drop(columns=[col for col in columns_to_drop if col in metrics_df_display.columns])
 
-                # Названия колонок (финальные)
-                # Добавляем "Кол-во ребал." в список названий
-                final_columns = [
-                    "Конечная стоимость", "CAGR",
-                    "Просадка %", "Волат-ть", "Шарп",
-                    "Сортино", "Ф. Восст.", "Ребал."
-                ]
-                if len(metrics_df_display.columns) == len(final_columns):
-                     metrics_df_display.columns = final_columns
-                else:
-                     print(f"Warning: Column count mismatch. Expected {len(final_columns)}, got {len(metrics_df_display.columns)}")
-                     # Попытка переименовать только существующие, но может привести к ошибкам
-                     # rename_map = dict(zip(metrics_df_display.columns[:len(final_columns)], final_columns))
-                     # metrics_df_display = metrics_df_display.rename(columns=rename_map)
-                     pass # Оставляем оригинальные имена, если не совпадает
-
-                # Форматирование Rebalance Count
-                # Убедимся, что колонка существует перед форматированием
+                # Форматирование Rebalance Count (ДО переименования)
                 if 'Rebalance Count' in metrics_df_display.columns:
-                     metrics_df_display['Rebalance Count'] = metrics_df['Rebalance Count'].map(lambda x: "{:.0f}".format(x) if not pd.isna(x) else "-") # Отображаем как целое или прочерк
+                     metrics_df_display['Rebalance Count'] = metrics_df['Rebalance Count'].map(lambda x: "{:.0f}".format(x) if not pd.isna(x) else "-")
+
+                # Названия колонок (финальные) - используем rename для надежности
+                rename_map = {
+                    "End Value": "Конечная стоимость",
+                    "CAGR": "CAGR",
+                    "Max Drawdown %": "Просадка %",
+                    "Volatility": "Волат-ть",
+                    "Sharpe Ratio": "Шарп",
+                    "Sortino Ratio": "Сортино",
+                    "Recovery Factor": "Ф. Восст.",
+                    "Rebalance Count": "Ребал."
+                }
+                metrics_df_display = metrics_df_display.rename(columns=rename_map)
 
                 st.dataframe(metrics_df_display, width='stretch')
             else:
