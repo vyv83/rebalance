@@ -339,14 +339,34 @@ def run_backtest(
     combined_hover_texts.append(initial_hover_text)
     hover_dates.append(first_date)
 
+    # --- Capture initial state (Date 0) for all lists ---
+    initial_asset_values = {}
+    initial_asset_weights = {}
+    for ticker in all_price_assets:
+        sh = initial_holdings_template.get(ticker, 0.0)
+        pr = price_data.at[first_date, ticker]
+        val = sh * pr if sh > 0 and not pd.isna(pr) and pr > 0 else 0.0
+        initial_asset_values[ticker] = val
+        initial_asset_weights[ticker] = val / initial_total_value_check if initial_total_value_check > 0 else 0.0
+    
+    initial_daily_values = initial_asset_values.copy()
+    initial_daily_values['Cash'] = initial_cash
+    initial_daily_values['Date'] = first_date
+    
+    initial_daily_weights = initial_asset_weights.copy()
+    initial_daily_weights['Cash'] = initial_cash / initial_total_value_check if initial_total_value_check > 0 else 1.0
+    initial_daily_weights['Date'] = first_date
+    # ----------------------------------------------------
+
     # --- 1. Логика КАЛЕНДАРНОЙ ребалансировки ---
     portfolio_cal = pd.DataFrame(index=price_data.index)
     portfolio_cal['Holdings'] = pd.Series(dtype=object)
     portfolio_cal['Cash'] = np.nan
     portfolio_cal['Total_Value'] = np.nan
     
-    # --- Container for Actual Component Weights (Calendar Strategy) ---
-    actual_weights_dict_list_cal = [] 
+    # --- Container for Actual Component Weights & Values (Calendar Strategy) ---
+    actual_weights_dict_list_cal = [initial_daily_weights.copy()] 
+    actual_values_dict_list_cal = [initial_daily_values.copy()]
     # ----------------------------------------------------------------
 
     portfolio_cal.at[first_date, 'Holdings'] = initial_holdings_template.copy()
@@ -446,6 +466,14 @@ def run_backtest(
         hover_text = format_hover_weights(final_holdings, final_cash, price_data.loc[current_date],
                                           assets_to_rebalance, all_price_assets)
         calendar_hover_texts.append(hover_text)
+        
+        # --- Расчет фактических ЗНАЧЕНИЙ ($) на конец дня (Calendar) ---
+        daily_values_cal = current_day_asset_vals.copy()
+        daily_values_cal['Cash'] = final_cash
+        daily_values_cal['Date'] = current_date
+        actual_values_dict_list_cal.append(daily_values_cal)
+        # ------------------------------------------------------------
+        
         if len(hover_dates) <= i: hover_dates.append(current_date) # Добавляем дату, если это первый цикл
         # -----------------------------------------------------------
 
@@ -457,8 +485,9 @@ def run_backtest(
     portfolio_wb['Cash'] = np.nan
     portfolio_wb['Total_Value'] = np.nan
     
-    # --- Container for Actual Component Weights (Weight Band Strategy) ---
-    actual_weights_dict_list_wb = [] 
+    # --- Container for Actual Component Weights & Values (Weight Band Strategy) ---
+    actual_weights_dict_list_wb = [initial_daily_weights.copy()] 
+    actual_values_dict_list_wb = [initial_daily_values.copy()]
     # ----------------------------------------------------------------
     # Удаляем Prices_Last_Rebalance
 
@@ -581,7 +610,16 @@ def run_backtest(
         hover_text = format_hover_weights(final_holdings, final_cash, price_data.loc[current_date],
                                           assets_to_rebalance, all_price_assets)
         weight_band_hover_texts.append(hover_text)
-        # -----------------------------------------------------------
+        
+        # --- Расчет фактических ЗНАЧЕНИЙ ($) на конец дня (Weight Band) ---
+        daily_values_wb = current_day_asset_vals.copy()
+        daily_values_wb['Cash'] = final_cash
+        daily_values_wb['Date'] = current_date
+        actual_values_dict_list_wb.append(daily_values_wb)
+        # ---------------------------------------------------------------
+        
+        if len(hover_dates) <= i: hover_dates.append(current_date)
+# -----------------------------------------------------------
 
     weight_band_rebalanced_values = portfolio_wb['Total_Value'].copy().rename('Weight_Band_Value') # Переименовано
 
@@ -591,10 +629,11 @@ def run_backtest(
     portfolio_comb['Cash'] = np.nan
     portfolio_comb['Total_Value'] = np.nan
     
-    # --- Container for Actual Component Weights (Combined Strategy) ---
+    # --- Container for Actual Component Weights & Values (Combined Strategy) ---
     # DataFrame to store weight of each asset at the end of each day
     # Index: Date, Columns: Assets + Cash
-    actual_weights_dict_list = [] # List of dicts to create DataFrame later
+    actual_weights_dict_list = [initial_daily_weights.copy()] # List of dicts to create DataFrame later
+    actual_values_dict_list = [initial_daily_values.copy()]
     # ----------------------------------------------------------------
     
     # Удаляем Prices_Last_Price_Trigger_Rebalance
@@ -727,7 +766,16 @@ def run_backtest(
         hover_text = format_hover_weights(final_holdings, final_cash, price_data.loc[current_date],
                                           assets_to_rebalance, all_price_assets)
         combined_hover_texts.append(hover_text)
-        # -----------------------------------------------------------
+        
+        # --- Расчет фактических ЗНАЧЕНИЙ ($) на конец дня (Combined) ---
+        daily_values_comb = current_day_asset_vals.copy()
+        daily_values_comb['Cash'] = final_cash
+        daily_values_comb['Date'] = current_date
+        actual_values_dict_list.append(daily_values_comb)
+        # ------------------------------------------------------------
+        
+        if len(hover_dates) <= i: hover_dates.append(current_date)
+# -----------------------------------------------------------
 
     combined_rebalanced_values = portfolio_comb['Total_Value'].copy().rename('Combined_Value')
 
@@ -820,6 +868,26 @@ def run_backtest(
     if not actual_weights_df_wb.empty:
         actual_weights_df_wb.set_index('Date', inplace=True)
     auxiliary_data['actual_weights_band'] = actual_weights_df_wb
+
+    # --- НОВОЕ: Добавляем DataFrame абсолютных значений ($) ---
+    # Combined
+    actual_values_df_comb = pd.DataFrame(actual_values_dict_list)
+    if not actual_values_df_comb.empty:
+        actual_values_df_comb.set_index('Date', inplace=True)
+    auxiliary_data['actual_alloc_combined'] = actual_values_df_comb
+
+    # Calendar
+    actual_values_df_cal = pd.DataFrame(actual_values_dict_list_cal)
+    if not actual_values_df_cal.empty:
+        actual_values_df_cal.set_index('Date', inplace=True)
+    auxiliary_data['actual_alloc_calendar'] = actual_values_df_cal
+    
+    # Weight Band
+    actual_values_df_wb = pd.DataFrame(actual_values_dict_list_wb)
+    if not actual_values_df_wb.empty:
+        actual_values_df_wb.set_index('Date', inplace=True)
+    auxiliary_data['actual_alloc_band'] = actual_values_df_wb
+    # ------------------------------------------------------------
 
 
     if use_dynamic_weights:

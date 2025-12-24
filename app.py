@@ -381,7 +381,7 @@ if run_button:
                 weight_deviation_threshold=price_change_threshold,
                 deviation_type=deviation_type,
                 use_dynamic_weights=use_dynamic_weights, # Передаем параметр
-                dynamic_window_days=dynamic_window       # Передаем параметр
+                dynamic_window_days=dynamic_window
             )
             if backtest_output is None:
                 st.error("Ошибка при выполнении бэктеста.")
@@ -570,9 +570,54 @@ if run_button:
              else:
                  st.warning("Не удалось рассчитать фактические веса для стратегии по отклонению.")
 
-    # Секция 7: Анализ Inverse Volatility (Только если включено)
+    # Секция 7: Распределение Капитала ($)
+    with st.expander("7. Распределение Капитала ($)", expanded=True):
+        st.caption("Данные графики показывают абсолютную стоимость каждого актива в портфеле. Сумма всех областей соответствует общей стоимости портфеля (Equity Curve).")
+        
+        # Получаем данные о стоимости
+        aa_comb = auxiliary_data.get('actual_alloc_combined')
+        aa_cal = auxiliary_data.get('actual_alloc_calendar')
+        aa_band = auxiliary_data.get('actual_alloc_band')
+        
+        dates_comb = [x[0] for x in rebalance_log.get('combined', [])]
+        dates_cal = [x[0] for x in rebalance_log.get('calendar', [])]
+        dates_band = [x[0] for x in rebalance_log.get('weight_band', [])]
+        
+        tab_aa_comb, tab_aa_cal, tab_aa_band = st.tabs(["Комбинированная (Combined)", "Календарная (Calendar)", "По Отклонению (Threshold)"])
+        
+        with tab_aa_comb:
+             if aa_comb is not None and not aa_comb.empty:
+                fig_aa_comb = plots.plot_absolute_allocation(aa_comb, selected_ticker_map, rebalance_dates=dates_comb)
+                if fig_aa_comb:
+                     st.plotly_chart(fig_aa_comb, width='stretch', key="aa_comb")
+                else:
+                     st.warning("Нет данных.")
+             else:
+                 st.warning("Не удалось рассчитать стоимость для комбинированной стратегии.")
+
+        with tab_aa_cal:
+             if aa_cal is not None and not aa_cal.empty:
+                fig_aa_cal = plots.plot_absolute_allocation(aa_cal, selected_ticker_map, rebalance_dates=dates_cal)
+                if fig_aa_cal:
+                     st.plotly_chart(fig_aa_cal, width='stretch', key="aa_cal")
+                else:
+                     st.warning("Нет данных.")
+             else:
+                 st.warning("Не удалось рассчитать стоимость для календарной стратегии.")
+
+        with tab_aa_band:
+             if aa_band is not None and not aa_band.empty:
+                fig_aa_band = plots.plot_absolute_allocation(aa_band, selected_ticker_map, rebalance_dates=dates_band)
+                if fig_aa_band:
+                     st.plotly_chart(fig_aa_band, width='stretch', key="aa_band")
+                else:
+                     st.warning("Нет данных.")
+             else:
+                 st.warning("Не удалось рассчитать стоимость для стратегии по отклонению.")
+
+    # Секция 8: Анализ Inverse Volatility (Только если включено)
     if use_dynamic_weights:
-        with st.expander("7. Анализ Стратегии Inverse Volatility", expanded=True):
+        with st.expander("8. Анализ Стратегии Inverse Volatility", expanded=True):
             target_weights_df = auxiliary_data.get('dynamic_weights_df')
             vol_df = auxiliary_data.get('volatility_df')
             

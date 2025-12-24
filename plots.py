@@ -380,3 +380,55 @@ def plot_effective_weights(weights_df: pd.DataFrame, ticker_map: Dict[str, str],
         yaxis=dict(range=[0, 100])
     )
     return fig
+
+def plot_absolute_allocation(values_df: pd.DataFrame, ticker_map: Dict[str, str], rebalance_dates: Optional[List[pd.Timestamp]] = None) -> Optional[go.Figure]:
+    """График распределения капитала в $ (Stacked Area)."""
+    if values_df is None or values_df.empty:
+        return None
+    
+    fig = go.Figure()
+    
+    # Сортируем колонки для консистентности (по алфавиту, но Кэш в конце)
+    cols = sorted([c for c in values_df.columns if c != 'Cash']) + (['Cash'] if 'Cash' in values_df.columns else [])
+    
+    for col in cols:
+        display_name = ticker_map.get(col, col)
+        fig.add_trace(go.Scatter(
+            x=values_df.index,
+            y=values_df[col], # В долларах
+            mode='lines',
+            name=display_name,
+            stackgroup='one', # Включаем стекинг
+            hovertemplate='%{y:$,.0f}<extra></extra>',
+            line=dict(width=0)
+        ))
+    
+    if rebalance_dates is not None and len(rebalance_dates) > 0:
+        # Находим максимальное значение для высоты линий ребалансировки
+        max_y = values_df.sum(axis=1).max()
+        shapes = []
+        for d in rebalance_dates:
+            shapes.append(dict(
+                type="line",
+                x0=d,
+                y0=0,
+                x1=d,
+                y1=max_y,
+                xref="x",
+                yref="y",
+                layer="above",
+                line=dict(
+                    color="grey",
+                    width=1,
+                    dash="solid"
+                )
+            ))
+        fig.update_layout(shapes=shapes)
+    
+    fig.update_layout(
+        xaxis_title='Дата',
+        yaxis_title='Капитал ($)',
+        legend_title='Активы',
+        hovermode='x unified'
+    )
+    return fig
